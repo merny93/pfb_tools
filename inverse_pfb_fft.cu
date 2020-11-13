@@ -83,7 +83,7 @@ struct INVERSE_GPU_PLAN *setup_inverse_plan_internal(int nblocks, int nchan, int
     mul_sinc(win_tmp, win_size);
 
 
-    //malloc for window ts
+    //malloc for window ts which is of size nblocks by 2*(nchan-1)
     float *win_temp_gpu;
     if (cudaMalloc((void **)&win_temp_gpu), sizeof((float)*nblocks*2*(nchan-1)) != cudaSuccess){
         //will need to be half the byte size of the  dat_gpu as its just reals now 
@@ -96,7 +96,7 @@ struct INVERSE_GPU_PLAN *setup_inverse_plan_internal(int nblocks, int nchan, int
     //no longer need the ram copy of window so free it
     free(win_tmp);
 
-    //malloc for window_ts_ft
+    //malloc for window_ts_ft this one is nblocks/2 +1 by 2*(nchan-1)              
     if (cudaMalloc((void **)&(tmp->win_gpu)), sizeof((float)*(nblocks/2 +1)*2*(nchan-1))) != cudaSuccess){
         //same as dat_gpu 
         printf("Malloc error for window ft on gpu \n");
@@ -105,7 +105,7 @@ struct INVERSE_GPU_PLAN *setup_inverse_plan_internal(int nblocks, int nchan, int
     //do the fft on gpu of the window
     cufftHandle *win_plan;
 
-    if (cufftPlanMany(win_plan, 1, &nblocks, &69, sizeof(float)*2*(nchan-1), sizeof(float)*1, &69, sizeof(float)*(nblocks/2 +1)*2*(nchan-1), sizeof(float)*1, CUFFT_R2C)  != CUFFT_SUCCESS){
+    if (cufftPlanMany(win_plan, 1, &nblocks, &69, sizeof(float)*2*(nchan-1), sizeof(float)*1, &69, sizeof(float)*(nblocks/2 +1)*2*(nchan-1), sizeof(float)*1, CUFFT_R2C, 2*(nchan-1))  != CUFFT_SUCCESS){
         printf("Failed to create the fft plan for window \n");
     }
 
@@ -140,7 +140,15 @@ struct INVERSE_GPU_PLAN *setup_inverse_plan_internal(int nblocks, int nchan, int
 
 
     // now time for the hard part 
-    if (cufftPlanMany(&(tmp->psudo_ts_plan),1, &))
+    // starting with the fft to creat the psudo ts
+    if (cufftPlanMany(&(tmp->psudo_ts_plan), 1, &nchan, &69, sizeof(cufftComplex)*1, sizeof(cufftComplex)*nchan, &69, sizeof(float)*1, sizeof(float)*2*(nchan-1), CUFFT_R2C, nblocks)  != CUFFT_SUCCESS){
+        printf("Failed to create the fft plan for psudo ts \n");
+    }
+
+    //now for the psudo ts ft from the previous size to the size of window and then we will go back 
+    if (cufftPlanMany(&(tmp->psudo_ft_plan), 1, &nchan, &69, sizeof(cufftComplex)*1, sizeof(cufftComplex)*nchan, &69, sizeof(float)*1, sizeof(float)*2*(nchan-1), CUFFT_R2C, nblocks)  != CUFFT_SUCCESS){
+        printf("Failed to create the fft plan for psudo ts \n");
+    }
     return tmp
 }
 
