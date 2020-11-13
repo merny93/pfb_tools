@@ -67,6 +67,7 @@ struct INVERSE_GPU_PLAN {
 
 
 struct INVERSE_GPU_PLAN *setup_inverse_plan_internal(int nblocks, int nchan, int ntap){
+
     struct INVERSE_GPU_PLAN *tmp = (struct INVERSE_GPU_PLAN *)malloc(sizeof(struct INVERSE_GPU_PLAN));
     
     tmp->nblocks = nblocks;
@@ -127,13 +128,17 @@ struct INVERSE_GPU_PLAN *setup_inverse_plan_internal(int nblocks, int nchan, int
     } 
 
     //malloc for psudo ts on gpu
-    if (cudaMalloc((void **)&(tmp->psudo_ts_gpu)), sizeof((float)*nblocks*2*(nchan-1)) != cudaSuccess){
+    int psudo_ts_width = 2*(nchan-1);
+    int psudo_ts_height = nblocks;
+    if (cudaMalloc((void **)&(tmp->psudo_ts_gpu)), sizeof((float)*psudo_ts_width*psudo_ts_height) != cudaSuccess){
         //will need to be half the byte size of the  dat_gpu as its just reals now 
         printf("Malloc error for psudo ts on gpu \n");
     }
 
     //malloc for ft of psudo ts on gpu
-    if (cudaMalloc((void **)&(tmp->psudo_ts_ft_gpu)), sizeof((float)*(nblocks/2 +1)*2*(nchan-1))) != cudaSuccess){
+    int psudo_ft_width = psudo_ts_width
+    int psudo_ft_height = (int) (nblocks/2 +1)
+    if (cudaMalloc((void **)&(tmp->psudo_ts_ft_gpu)), sizeof((float)*psudo_ft_height*psudo_ts_width)) != cudaSuccess){
         //same as dat_gpu 
         printf("Malloc error for psudo_ts_ft on gpu \n");
     } 
@@ -141,17 +146,55 @@ struct INVERSE_GPU_PLAN *setup_inverse_plan_internal(int nblocks, int nchan, int
 
     // now time for the hard part 
     // starting with the fft to creat the psudo ts
-    if (cufftPlanMany(&(tmp->psudo_ts_plan), 1, &nchan, &69, sizeof(cufftComplex)*1, sizeof(cufftComplex)*nchan, &69, sizeof(float)*1, sizeof(float)*2*(nchan-1), CUFFT_R2C, nblocks)  != CUFFT_SUCCESS){
+    if (cufftPlanMany(&(tmp->psudo_ts_plan), 1, &psudo_ts_width, &69, sizeof(cufftComplex)*1, sizeof(cufftComplex)*nchan, &69, sizeof(float)*1, sizeof(float)*psudo_ts_width, CUFFT_C2R, nblocks)  != CUFFT_SUCCESS){
         printf("Failed to create the fft plan for psudo ts \n");
     }
 
     //now for the psudo ts ft from the previous size to the size of window and then we will go back 
-    if (cufftPlanMany(&(tmp->psudo_ft_plan), 1, &nchan, &69, sizeof(cufftComplex)*1, sizeof(cufftComplex)*nchan, &69, sizeof(float)*1, sizeof(float)*2*(nchan-1), CUFFT_R2C, nblocks)  != CUFFT_SUCCESS){
-        printf("Failed to create the fft plan for psudo ts \n");
+    //stride it vertically so width between consecutive and 1 between sets
+    //save "normally" so spacing between consecutive is 1 and between sets is the length of the transform
+    if (cufftPlanMany(&(tmp->psudo_ft_plan), 1, &psudo_ts_height, &69, sizeof(float)*psudo_ts_width, sizeof(float)*1, &69, sizeof(cufftComplex)*1, sizeof(cufftComplex)*psudo_ft_height, CUFFT_R2C, nblocks)  != CUFFT_SUCCESS){
+        printf("Failed to create the fft plan for psudo ft \n");
     }
+
+    ///do the convolution here::: but this is the plan so no need yet:
+
+    //now do the transform back
+    //if read sequentially should be the data in order:
+    if (cufftPlanMany(&(tmp->result_ift_plan), 1, &psudo_ts_height, &69, sizeof(cufftComplex)*1, sizeof(cufftComplex)*psudo_ft_height, &69, sizeof(float)*psudo_ts_width, sizeof(float)*1, CUFFT_C2R, nblocks)  != CUFFT_SUCCESS){
+        printf("Failed to create the fft plan for rts \n");
+    }
+
     return tmp
 }
+void inverse_pfb_gpu_internal(float *data, float *result, struct INVERSE_GPU_PLAN *plan){
+    //copy data onto gpu
+    if (cudaMemcpy(plan->dat_gpu,data,sizeof(cufftComplex)* (plan->nchan) * (plan->nblocks),cudaMemcpyHostToDevice)!=cudaSuccess){
+        printf("data to gpu copy failed ");
+    }
 
+    //execute the first thing 
+    if (cufftExecC2R(plan->psudo_ts_plan,plan->dat_gpu, plan->psudo_ts_gpu) != CUFFT_SUCCESS){
+        printf("failed to do fft for psudo ts\n");
+    }
+
+    //now the second
+    if (cufftExecR2C(plan->psudo_ft_plan, plan->psudo_ts_gpu, plan->psudo_ts_ft_gpu) != CUFFT_SUCCESS){
+        printf("failed to do fft for psudo ts ft\n");
+    }
+    //do the convolution 
+    convolve_pfb_gpu<<< something >>> sinetgugb else
+    //do the filtering 
+    filter_pfb_gpu<<< >>>>
+    //and fft back 
+    if (cufftExecC2R(plan->psudo_ft_plan, plan->psudo_ts_ft_gpu, plan->psudo_ts_gpu) != CUFFT_SUCCESS){
+        printf("failed to do fft for psudo ts ft\n");
+    }
+    //i should really clean this up rip
+    if (cudaMemcpy(result,plan->psudo_ts_gpu,sizeof(float)*2*((plan->nchan)-1)*(plan->nblocks),cudaMemcpyDeviceToHost)!=cudaSuccess){
+        printf("Error copying RTS to cpu.\n");
+    }
+}
 extern "C"{
     void make_inverse_plan(int nblocks, int nchan, int ntap, struct INVERSE_GPU_PLAN **ptr){
         
